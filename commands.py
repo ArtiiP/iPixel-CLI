@@ -36,6 +36,11 @@ def validate_range(value, min_val, max_val, name):
     """Validate that a value is within a specific range."""
     if not min_val <= value <= max_val:
         raise ValueError(f"{name} must be between {min_val} and {max_val}")
+        
+def validate_list(value, valid_list,  name):
+    """Validate that a value is within a list."""
+    if value not in valid_list:
+        raise ValueError(f"{name} must be one of {','.join([f"{v}" for v in sorted(valid_list)])} not {value}")
 
 
 def encode_text(text: str, matrix_height: int, color: str, font: str, font_offset: tuple[int, int], font_size: int) -> str:
@@ -291,3 +296,146 @@ def send_animation(path_or_hex):
 def delete_screen(n):
     """Delete a screen from the EEPROM."""
     return bytes.fromhex("070002010100") + bytes.fromhex(int_to_hex(to_int(n, "screen index")))
+
+###################################################################################################
+
+def add_packet_size(b):
+    return((len(b)+2).to_bytes(2, byteorder='little')+b)
+
+def update_packet_size(b):
+    return((len(b)).to_bytes(2, byteorder='little')+b[2:])
+
+def binCRC32_checksum(data):
+    import binascii
+    return (binascii.crc32(data) & 0xFFFFFFFF)
+
+
+class packet():
+    def __init__(self,packet_type=0,save_slot=0x65,data=None):
+        self.save_slot = save_slot
+        pass
+
+def char2bytes(char: str, matrix_height: int, font:str = "default", font_offset:tuple[int,int] = [0,0], font_size:int|None = None, minmax_width:tuple[int,int,int]=(9,16,1) ) ->  tuple[bytes, int]:
+    if not font_size:
+        font_size = matrix_height
+    char_hex, char_width = char_to_hex(char, matrix_height, font=font, font_offset=font_offset, font_size=font_size, minmax_width=minmax_width)
+    char_hex_converted = logic_reverse_bits_order(switch_endian(invert_frames(char_hex)))
+    return(bytes.fromhex(char_hex_converted), char_width)
+
+class text_packet():
+    def __init__(self, led_type=0, animation=0, speed=80, color_mode=0, color="ffffff", bg_color_mode=0, bg_color="000000", halign=0, valign=0):
+        self.led_type = led_type
+        self.animation = animation
+        self.speed = speed
+        self.halign = halign
+        self.valign = valign
+        self.color_mode = color_mode
+        self.color = color
+        self.bg_color_mode = bg_color_mode
+        self.bg_color = color
+        self.char_frames=[]
+        self.render_call=None
+        self.render_call_param={}
+
+    def get_packet(self):
+        properties = len(self.char_frames).to_bytes(2, 'little')
+        properties += bytearray([self.halign,self.valign,self.animation,self.speed,self.color_mode])
+        properties += bytes.fromhex(self.color)
+        properties += bytearray([self.bg_color_mode])
+        properties += bytes.fromhex(self.bg_color)
+        # TODO border 3B (br_type,br_speed,br_effect) for matrices with borders 
+        return properties + b"".join(self.char_frames)
+    
+    def set_renderer(self, render_call=None, **kwargs):
+        if render_call is None:
+            pass #TODO
+        self.render_call=render_call
+        if kwargs:
+            self.render_call_param=kwargs
+
+    def add_text(self, text, size=16, color=None):
+        if self.render_call is None:
+            pass #TODO
+        if color is None:
+            color="ffffff"
+        color = color if len(color)==6 else "".join(["%c%c"%(c,c) for c in list(color)])
+
+        for char in text:
+            bmp, char_width=self.render_call(char, size, **self.render_call_param )
+            self.add_bmp(size, char_width, color, bmp=bmp)
+
+    def add_img(self, size=16, filename=None ):
+        try:
+            with open(filename,"rb") as f:
+                data = f.read()
+                self.char_frames += [text_img_frame(size, jpg_data=data)]
+        except OSError:
+             pass
+
+    def add_bmp(self, height=16, width=16, color=None, bmp=None):
+        if color is None:
+            color="ffffff"
+        color = color if len(color)==6 else "".join(["%c%c"%(c,c) for c in list(color)])
+
+        if self.led_type == 0:
+            width = ((width+7)//8) * 8
+            self.char_frames += [text_bmp_frame(height, width, color, bmp_data=bmp)]
+        elif self.led_type == 1:
+            self.char_frames += [text_bmp_var_width_frame(height, width, color, bmp_data=bmp)]
+
+
+# only jpg
+def text_img_frame(res=16, jpg_data=None):
+    width2val={16:0x08, 32:0x09, 20:0x0C, 24:0x0B, 64:0x0A}
+    validate_list(res,width2val.keys(),"width")
+    
+    h = bytearray([width2val[res]])
+    h += len(jpg_data).to_bytes(3, byteorder='little')
+    return(h + jpg_data)
+    
+def text_bmp_frame(height=16, width=16, color_rgb="ffffff", bmp_data=None):
+    res2val_size={
+        "16x08" : (0x00, 16* 8//8),
+        "16x16" : (0x01, 16*16//8),
+        "32x16" : (0x02, 32*16//8),
+        "32x32" : (0x03, 32*32//8),
+        "48x24" : (0x04, 48*24//8),
+        "48x48" : (0x05, 48*48//8),
+        "64x32" : (0x06, 64*32//8),
+        "64x64" : (0x07, 64*64//8),
+    }
+    res=f"{height:02}x{width:02}"
+    validate_list(res,res2val_size.keys(),"width")
+    validate_list(len(bmp_data),[res2val_size[res][1]],"bmp size")
+
+    h = bytearray([res2val_size[res][0]])
+    h += bytes.fromhex(color_rgb)
+    return(h + bmp_data)
+
+def text_bmp_var_width_frame(height=16, width=16, color_rgb="ffffff", bmp_data=None):
+    validate_list(height,[16,32,24,20,12],"bmp height")
+    validate_list(len(bmp_data),[(height*((width+7)//8))],"bmp size")
+    
+    h = bytearray([0x80])
+    h += bytes.fromhex(color_rgb)
+    h += bytearray([width, height])
+    return(h + bmp_data)
+
+    
+def send_text_test():
+    header, checksum, save_slot = [bytes.fromhex(h) for h in ("7d00 0001 00 ff000000","f918c474","0065")]
+    
+    pkt = text_packet(led_type=0, animation=1, speed=100, color_mode=0, color="0000ff", bg_color_mode=2, bg_color="8fff34", halign=1, valign=1)
+    pkt.set_renderer(render_call=char2bytes, font="SourceCodePro-Black", font_size=14, minmax_width=(8,16,8))
+    pkt.add_text("Hello world", 16, "00ffff")
+    pkt.set_renderer(render_call=char2bytes, font="ArialNova-Bold", font_size=28, minmax_width=(16,32,16))
+    pkt.add_text(" world", 32, "6f0f0f")
+    pkt.add_bmp(16,8,"0000ff",bytes.fromhex("0000001c225a55555555553a423c0000"))
+    pkt.add_img(16,"jpg16x16")
+    prop_char=pkt.get_packet()
+
+    checksum = binCRC32_checksum((prop_char)).to_bytes(4, byteorder='little')
+    tsize=len(checksum + save_slot + prop_char) + 4
+    header =  header[:-4] + tsize.to_bytes(4, byteorder='little')
+    return update_packet_size(header + checksum + save_slot + prop_char)
+ 
