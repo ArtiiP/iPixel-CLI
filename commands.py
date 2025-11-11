@@ -412,6 +412,7 @@ def text_bmp_frame(height=16, width=16, color_rgb="ffffff", bmp_data=None):
     h += bytes.fromhex(color_rgb)
     return(h + bmp_data)
 
+# type=80  6x[12] 12x[20] 14x[24] o[16] o[32]  12x[12] 10x[16] 12x[20] 14x[24] 20x[32]
 def text_bmp_var_width_frame(height=16, width=16, color_rgb="ffffff", bmp_data=None):
     validate_list(height,[16,32,24,20,12],"bmp height")
     validate_list(len(bmp_data),[(height*((width+7)//8))],"bmp size")
@@ -438,4 +439,30 @@ def send_text_test():
     tsize=len(checksum + save_slot + prop_char) + 4
     header =  header[:-4] + tsize.to_bytes(4, byteorder='little')
     return update_packet_size(header + checksum + save_slot + prop_char)
- 
+
+def send_text1(text,**kwargs):
+    intkeys="animation, save_slot, speed, halign, valign, rainbow_mode, bg_color_mode, font_offset_x, font_offset_y, font_size, matrix_height".replace(' ','').split(',')
+    kwargs={k:(to_int(kwargs[k],k) if k in intkeys else kwargs[k]) for k in kwargs.keys() }
+    return send_text2_(text,led_type=1,**kwargs)
+
+def send_text2(text,**kwargs):
+    intkeys="animation, save_slot, speed, halign, valign, rainbow_mode, bg_color_mode, font_offset_x, font_offset_y, font_size, matrix_height".replace(' ','').split(',')
+    kwargs={k:(to_int(kwargs[k],k) if k in intkeys else kwargs[k]) for k in kwargs.keys() }
+    return send_text2_(text,led_type=0,**kwargs)
+    
+def send_text2_(text, led_type=0, animation=0, save_slot=0x65, speed=80, halign=0, valign=0, rainbow_mode=0, color="ffffff", bg_color_mode=0, bg_color="000000", font="default", font_offset_x=0, font_offset_y=0, font_size=0, matrix_height=16):
+    minmax_width80={16:(9,16,1), 12:(9,16,1), 20:(9,16,1), 24:(9,16,1), 32:(17,24,1)} # values guesed and need testing (except 16)
+    minmax_width00={16:(8,16,8), 32:(16,32,16), 48:(24,48,24), 64:(32,64,32)} #48,64 not tested (led_32x32 show gigerish)
+    minmax_width = minmax_width00 if led_type == 0 else minmax_width80
+    # save_slot 0x65 - temporary slot, not saved in eeprom
+
+    pkt = text_packet(led_type=led_type, animation=animation, speed=speed, color_mode=rainbow_mode, color=color, bg_color_mode=bg_color_mode, bg_color=bg_color, halign=halign, valign=valign)
+    pkt.set_renderer(render_call=char2bytes, font=font, font_size=font_size, minmax_width=minmax_width[matrix_height])
+    pkt.add_text(text, matrix_height, color)
+    prop_char=pkt.get_packet()
+    
+    checksum = binCRC32_checksum((prop_char)).to_bytes(4, byteorder='little')
+    tsize=len(prop_char) + 4 + 4 + 2 # tsize + checksum + save_slot
+    slot = bytearray([0,save_slot])
+    header = bytes.fromhex("ffff 0001 00") + tsize.to_bytes(4, byteorder='little') + checksum + slot
+    return update_packet_size(header + prop_char)
