@@ -48,6 +48,8 @@ COMMANDS = {
     "set_pixel": set_pixel,
     "delete_screen": delete_screen,
     "send_text": send_text,
+    "send_text1": send_text1,
+    "send_text2": send_text2,
     "set_speed" : set_speed,
     "send_animation": send_animation,
     "set_orientation": set_orientation,
